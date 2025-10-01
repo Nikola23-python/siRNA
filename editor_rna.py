@@ -38,21 +38,16 @@ class editor_rna:
                     break
                 fragment = frag[start_pos:end_pos]
 
-                # ИСПРАВЛЕНИЕ: правильно добавляем словарь в список
                 fragments_list.append({
                     'fragment_id': f"{fragment_size}_{start_pos + 1}",
                     'size_nt': fragment_size,
                     'sequence': fragment,
-                    'sequence_length': len(fragment)  # исправлено: длина фрагмента, а не всей последовательности
+                    'sequence_length': len(fragment)
                 })
-
         df = pd.DataFrame(fragments_list)
-
-        # Сохранение в файл, если указано имя файла
         if filename:
             df.to_csv(filename, index=False)
             print(f"Результаты сохранены в файл: {filename}")
-
         print(f"Создано {len(fragments_list)} фрагментов")
         return df
 
