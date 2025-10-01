@@ -41,7 +41,7 @@ class analyz_rna:
                 # 'g_percent': round(g_percent, 2),
                 # 'c_percent': round(c_percent, 2),
                 'gc_percent': round(gc_percent, 2),
-                'gc_point': gc_point
+                'gc_point': gc_point,
             })
         db = pd.DataFrame(results)
         return db
@@ -54,17 +54,15 @@ class analyz_rna:
             seq_upper = str(sequence).upper()
             length = len(seq_upper)
             gc_frequency = seq_upper.count('GC')
+            a['gc_frequency'] = gc_frequency
             at_frequency = seq_upper.count('AT')
+            a['at_frequency'] = at_frequency
             a['frequency_point'] = 0 if gc_frequency > 3 else 0 if at_frequency > 4 else 1
             # if filename is None:
             #     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
             #     filename = f"analyz_rna_{timestamp}.csv"
             # a.to_csv(filename, index=False, encoding='utf-8')
             return a
-
-
-
-
 
     def add_dt_overhangs(self, dt_count=2, filename=None):
         """TT overhangs in 3′-end"""
@@ -75,7 +73,6 @@ class analyz_rna:
                 lambda x: dt_overhang + str(x) + dt_overhang)
         a['original_length'] = a['sequence'].str.len()
         a['extended_length'] = a['sequence_with_dt'].str.len()
-        a['dt_overhang_length'] = dt_count * 2
         a['dt_point'] = 1
         print(f"✅ Добавлено {dt_count} dT с каждой стороны к {len(a)} последовательностям")
         if filename is None:
@@ -84,11 +81,6 @@ class analyz_rna:
         a.to_csv(filename, index=False, encoding='utf-8')
         return a
 
-a = helper
-b = analyz_rna
-a.run_all_methods(b)
 
-#
-# b = analyz_rna()
-# # b.analyze_gc()
-# b.add_dt_overhangs()
+d = analyz_rna()
+c = d.add_dt_overhangs()
