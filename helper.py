@@ -13,17 +13,13 @@ class helper:
         methods = [method for method in dir(obj)
                    if not method.startswith('_') or
                    (method.startswith('_') and not method.startswith('__'))]
-
         for method_name in methods:
             try:
                 method = getattr(obj, method_name)
                 if callable(method):
                     print(f"🔹 МЕТОД: {method_name}()")
-
-                    # Получаем документацию
                     doc = method.__doc__
                     if doc:
-                        # Форматируем вывод документации
                         lines = doc.strip().split('\n')
                         for line in lines:
                             print(f"   {line.strip()}")
