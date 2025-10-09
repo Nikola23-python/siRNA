@@ -64,3 +64,9 @@ class helper:
                 })
                 print(f" ❌ Ошибка: {e}")
         return results
+
+    def to_csv(self, filename=None):
+        if filename:
+            self.to_csv(filename, index=False)
+            print(f"Результаты сохранены в файл: {filename}")
+        return self
