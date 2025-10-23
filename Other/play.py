@@ -1,3 +1,23 @@
+def u_at_tenth(sequence: str):
+    """
+    Check if U nucleotide is at the tenth position (1-based indexing).
+
+    Args:
+        sequence: RNA sequence string
+
+    Returns:
+        bool: True if U at position 10, False otherwise
+    """
+    if sequence[9].upper() == 'U':
+        return  1
+    return 0
+
+
+# Usage
+rna_sequence = "AUGCCGACGGUACGUAG"
+result = has_u_at_tenth(rna_sequence)
+print(f"U at tenth position: {result}")
+
 # from analyze_rna import analyze_rna
 #
 # #[781:2858]

@@ -257,8 +257,15 @@ class analyz_rna:
         df1 = self.analyze_gc().add_prefix('m1_')
         df2 = self.frequency_gc_at().add_prefix('m2_')
         df3 = self.add_dt_overhangs().add_prefix('m3_')
+        df4 = self.u_at_10().add_prefix('m4_')
+        df5 = self.no_g_at_13().add_prefix('m5_')
+        df6 = self.no_g_c_at_19().add_prefix('m6_')
+        df7 = self.a_at_3_19().add_prefix('m7_')
+        df8 = self.strong_pairing_5_end().add_prefix('m8_')
+        df9 = self.a_at_6().add_prefix('m9_')
+        df10 = self.weak_pairing_5_end().add_prefix('m10_')
 
-        combined_df = pd.concat([df1, df2, df3], axis=1)
+        combined_df = pd.concat([df1, df2, df3, df4, df5, df6, df7, df8, df9, df10], axis=1)
 
         if columns_to_show:
             available_columns = [col for col in columns_to_show if col in combined_df.columns]
@@ -275,6 +282,6 @@ d = analyz_rna()
 # print(h.to_csv("a_at_6.csv"))
 # h = d.weak_pairing_5_end()
 # print(h.to_csv("weak_pairing_5_end.csv"))
-# t = d.get_combined_data([])
-t = d.final_count()
-print(t.to_csv('general_data.csv'))
+t = d.get_combined_data()
+# t = d.final_count()
+print(t.to_csv('combined_data.csv'))
