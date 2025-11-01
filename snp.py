@@ -26,14 +26,12 @@ def read_bed_file(file_path):
 
 
 def is_critical_position(pos, sirna_length):
-    # Критические позиции адаптированы под длину siRNA
     critical_positions = {
         1: "5'-конец",
         19: "3'-конец",
         10: "сайт разрезания",
         11: "сайт разрезания"
     }
-    # Seed регион (позиции 2-8) для любой длины
     if 2 <= pos <= 8:
         return True, "seed-регион"
     return pos in critical_positions, critical_positions.get(pos, "не критичная")
@@ -66,9 +64,9 @@ def create_sirna_dataframe(sequence_df, snp_df, exon_coords):
     data = []
     for _, seq_row in sequence_df.iterrows():
         sequence = str(seq_row['sequence']).upper().replace('U', 'T')
-        sirna_length = seq_row['size_nt']  # Используем реальную длину из данных
+        sirna_length = seq_row['size_nt']
 
-        # Генерируем siRNA кандидаты скользящим окном
+
         for i in range(len(sequence) - sirna_length + 1):
             snp_analysis = analyze_sirna_snp(sequence, i, snps_in_exon, exon_coords['start'], sirna_length)
 
@@ -93,7 +91,7 @@ def create_sirna_dataframe(sequence_df, snp_df, exon_coords):
     return pd.DataFrame(data)
 
 
-# Основной код
+
 snp_df = read_bed_file("Live RefSNPs dbSNP b157 v2.BED")
 exon_coords = {'chrom': '6', 'start': 16326394, 'end': 16328470}
 
