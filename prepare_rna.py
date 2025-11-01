@@ -106,6 +106,7 @@ class editor_rna:
 
 a = editor_rna()
 df_sense = a.sense()
+print(df_sense)
 df_antisense = a.antisense()
 
 
