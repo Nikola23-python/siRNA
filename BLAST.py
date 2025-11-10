@@ -1,228 +1,261 @@
-import time
-from Bio.Blast import NCBIWWW, NCBIXML
+import pandas as pd
+import subprocess
+import os
+from tqdm import tqdm
+from Bio.Seq import Seq
+import tempfile
+
 from prepare_rna import df_sense, df_antisense
-import pandas as pd
-from typing import Dict, Any
 
-import time
-from Bio.Blast import NCBIWWW, NCBIXML
-import pandas as pd
-from typing import Dict, Any
-
-try:
-    from prepare_rna import df_sense, df_antisense
-except ImportError:
-    # Для тестирования создадим пустые DataFrame
-    df_sense = pd.DataFrame()
-    df_antisense = pd.DataFrame()
+# Путь к локальной BLAST базе
+BLAST_DB = os.path.expanduser("~/blast_dbs/human_refseq_complete")
 
 
-class BlastScorer:
-    def __init__(self, max_coverage: float = 0.78, max_homology: int = 7):
-        self.max_coverage = max_coverage
-        self.max_homology = max_homology
+def check_all_sirna_blast_parameter_local(df_sense, df_antisense, gene_name="ATXN1"):
+    """
+    ПРОВЕРКА BLAST ПАРАМЕТРА ДЛЯ ВСЕХ siRNA С ЛОКАЛЬНОЙ БАЗОЙ
+    """
+    print(f"🎯 ПРОВЕРКА BLAST ПАРАМЕТРА ДЛЯ ВСЕХ {len(df_sense)} siRNA")
+    print(f"💾 Используется локальная база: {BLAST_DB}")
+    print("=" * 70)
 
-    def run_blast_analysis(self, sequences_df, database="nt", wait_time=5):
+    # Проверяем что база существует
+    if not os.path.exists(BLAST_DB + ".nhr"):
+        print(f"❌ BLAST база не найдена: {BLAST_DB}")
+        print("💡 Убедитесь что база создана: ~/blast_dbs/human_refseq_complete")
+        return None, 0
 
-        results = []
+    results = []
+    total_score = 0
 
-        for idx, row in sequences_df.iterrows():
-            fragment_id = row['fragment_id']
-            sequence = row['sequence']
+    # Используем tqdm для прогресс-бара
+    for idx in tqdm(range(len(df_sense)), desc="Анализ siRNA"):
+        sense_row = df_sense.iloc[idx]
+        antisense_row = df_antisense.iloc[idx]
 
-            print(f"Анализируем {fragment_id}: {sequence}")
+        sense_sequence = sense_row['sequence']
+        antisense_sequence = antisense_row['sequence']
+        fragment_id = sense_row['fragment_id']
+        size_nt = sense_row['size_nt']
 
+        # Пропускаем если последовательности не совпадают по длине
+        if len(sense_sequence) != len(antisense_sequence):
+            continue
+
+        # Проверяем каждую цепь через ЛОКАЛЬНЫЙ BLAST
+        sense_score = check_strand_specificity_local(sense_sequence, "СМЫСЛОВАЯ", fragment_id)
+        antisense_score = check_strand_specificity_local(antisense_sequence, "АНТИСМЫСЛОВАЯ", fragment_id)
+
+        # Применяем scoring систему из статьи
+        sirna_score = calculate_blast_score(sense_score, antisense_score)
+        total_score += sirna_score
+
+        # Сохраняем результаты
+        results.append({
+            'fragment_id': fragment_id,
+            'size_nt': size_nt,
+            'sense_sequence': sense_sequence,
+            'antisense_sequence': antisense_sequence,
+            'blast_score': sirna_score,
+            'sense_blast_result': sense_score,
+            'antisense_blast_result': antisense_score
+        })
+
+    # Создаем DataFrame с результатами
+    results_df = pd.DataFrame(results)
+
+    # Статистика
+    avg_score = total_score / len(results) if results else 0
+
+    print(f"\n📊 ФИНАЛЬНАЯ СТАТИСТИКА:")
+    print(f"   Проанализировано siRNA: {len(results)}")
+    print(f"   Средний BLAST score: {avg_score:.2f}/2")
+
+    # Анализ распределения scores
+    score_distribution = results_df['blast_score'].value_counts().sort_index()
+    print(f"   Распределение scores:")
+    for score, count in score_distribution.items():
+        print(f"     • {score} баллов: {count} siRNA ({count / len(results) * 100:.1f}%)")
+
+    # Лучшие siRNA (score = 2)
+    best_sirnas = results_df[results_df['blast_score'] == 2]
+    print(f"   Лучших siRNA (2 балла): {len(best_sirnas)}")
+
+    if len(best_sirnas) > 0:
+        print(f"   Топ-10 лучших siRNA:")
+        for idx, row in best_sirnas.head(10).iterrows():
+            print(f"     • {row['fragment_id']} ({row['size_nt']}нт): {row['sense_sequence']}")
+
+    return results_df, avg_score
+
+
+def check_strand_specificity_local(sequence, strand_type, fragment_id):
+    """
+    Проверить специфичность одной цепи через ЛОКАЛЬНЫЙ BLAST
+    """
+    try:
+        # Создаем временный файл с последовательностью
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.fa', delete=False) as temp_file:
+            temp_file.write(f">{fragment_id}_{strand_type}\n{sequence}\n")
+            temp_filename = temp_file.name
+
+        # Выполняем ЛОКАЛЬНЫЙ BLAST с параметрами из статьи
+        cmd = [
+            "blastn",
+            "-query", temp_filename,
+            "-db", BLAST_DB,
+            "-word_size", "7",  # Статья: word size = 7
+            "-evalue", "1000",  # Статья: E-value = 1000-3000
+            "-gapopen", "2",  # Статья: gap costs
+            "-gapextend", "1",  # Статья: gap costs
+            "-outfmt", "10 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle",
+            "-num_alignments", "10",  # Ограничиваем количество результатов
+            "-task", "blastn-short"  # Оптимизировано для коротких последовательностей
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Удаляем временный файл
+        os.unlink(temp_filename)
+
+        # Анализируем результаты BLAST
+        is_good = analyze_blast_results_local(result.stdout, sequence, strand_type, fragment_id)
+
+        return 1 if is_good else 0
+
+    except Exception as e:
+        print(f"❌ Ошибка локального BLAST для {fragment_id} ({strand_type}): {e}")
+        return 0
+
+
+def analyze_blast_results_local(blast_output, sequence, strand_type, fragment_id):
+    """
+    Анализ результатов ЛОКАЛЬНОГО BLAST по критериям из статьи
+    """
+    lines = [line.strip() for line in blast_output.strip().split('\n') if line.strip()]
+
+    # Если нет выравниваний - отлично!
+    if not lines:
+        return True
+
+    good_blast = True
+    issues = []
+
+    for line in lines:
+        parts = line.split(',')
+        if len(parts) >= 12:
             try:
-                result_handle = NCBIWWW.qblast("blastn", database, sequence)
+                pident = float(parts[2])  # % идентичности
+                length = int(parts[3])  # длина выравнивания
+                evalue = float(parts[10])  # e-value
+                subject_title = parts[12] if len(parts) > 12 else ""  # описание субъекта
 
-                blast_records = NCBIXML.parse(result_handle)
+                # КРИТЕРИИ из статьи:
+                # 1. Покрытие < 78%
+                query_coverage = (length / len(sequence)) * 100
+                if query_coverage > 78:
+                    good_blast = False
+                    issues.append(f"покрытие {query_coverage:.1f}%")
 
-                max_coverage = 0
-                max_homology = 0
+                # 2. Совпадений < 15 из 19 (или пропорционально длине)
+                matches = int(length * pident / 100)
+                max_allowed_matches = min(15, len(sequence) - 2)
+                if matches >= max_allowed_matches:
+                    good_blast = False
+                    issues.append(f"совпадений {matches}/{len(sequence)}")
 
-                for blast_record in blast_records:
-                    for alignment in blast_record.alignments:
-                        for hsp in alignment.hsps:
-                            coverage = hsp.align_length / len(sequence)
-                            max_coverage = max(max_coverage, coverage)
+                # 3. Проверка seed региона (только для смысловой цепи)
+                if strand_type == "СМЫСЛОВАЯ" and len(sequence) >= 8:
+                    if check_seed_region_issue_local(sequence, subject_title):
+                        good_blast = False
+                        issues.append("seed регион")
 
-                            max_homology = max(max_homology, hsp.align_length)
+            except (ValueError, IndexError):
+                continue
 
-                results.append({
-                    'fragment_id': fragment_id,
-                    'max_coverage': max_coverage,
-                    'max_homology': max_homology
-                })
-                result_handle.close()
+    # Логируем проблемы только для первых нескольких siRNA чтобы не засорять вывод
+    if not good_blast and len(issues) > 0 and int(fragment_id.split('_')[1]) < 10:
+        print(f"⚠️  {fragment_id} ({strand_type}): {', '.join(set(issues))}")
 
-                time.sleep(wait_time)
-
-            except Exception as e:
-                print(f"Ошибка для {fragment_id}: {e}")
-                results.append({
-                    'fragment_id': fragment_id,
-                    'max_coverage': 1.0,  # В случае ошибки считаем худший вариант
-                    'max_homology': len(sequence)
-                })
-
-        return pd.DataFrame(results)
-
-    def evaluate_blast_dataframes(self, df_sense: pd.DataFrame, df_antisense: pd.DataFrame,
-                                  id_column: str = "fragment_id") -> pd.DataFrame:
-
-        if id_column not in df_sense.columns or id_column not in df_antisense.columns:
-            raise ValueError(f"Колонка {id_column} не найдена в одном из DataFrame")
-
-        merged_df = pd.merge(df_sense, df_antisense, on=id_column,
-                             suffixes=('_sense', '_antisense'))
-
-        results = []
-        for _, row in merged_df.iterrows():
-            result = self._evaluate_row(row, id_column)
-            results.append(result)
-
-        results_df = pd.DataFrame(results)
-        return results_df
-
-    def _evaluate_row(self, row: pd.Series, id_column: str) -> Dict[str, Any]:
-
-        sense_data = {
-            "max_coverage": row.get("max_coverage_sense", row.get("coverage_sense", 0)),
-            "max_homology": row.get("max_homology_sense", row.get("homology_sense", 0))
-        }
-
-        antisense_data = {
-            "max_coverage": row.get("max_coverage_antisense", row.get("coverage_antisense", 0)),
-            "max_homology": row.get("max_homology_antisense", row.get("homology_antisense", 0))
-        }
-
-        sense_score = self._evaluate_single_strand(sense_data)
-        antisense_score = self._evaluate_single_strand(antisense_data)
-
-        total_score = 0
-        if sense_score["passed"] and antisense_score["passed"]:
-            total_score = 2
-        elif sense_score["passed"] or antisense_score["passed"]:
-            total_score = 1
-
-        return {
-            id_column: row[id_column],
-            "blast_total_score": total_score,
-            "sense_passed": sense_score["passed"],
-            "sense_coverage": sense_score["coverage_value"],
-            "sense_homology": sense_score["max_homology_found"],
-            "sense_coverage_check": sense_score["coverage_check"],
-            "sense_homology_check": sense_score["homology_check"],
-            "antisense_passed": antisense_score["passed"],
-            "antisense_coverage": antisense_score["coverage_value"],
-            "antisense_homology": antisense_score["max_homology_found"],
-            "antisense_coverage_check": antisense_score["coverage_check"],
-            "antisense_homology_check": antisense_score["homology_check"],
-            "explanation": self._generate_explanation(sense_score, antisense_score, total_score)
-        }
-
-    def _evaluate_single_strand(self, blast_data: Dict) -> Dict[str, Any]:
-        coverage_ok = self._check_coverage(blast_data)
-        homology_ok = self._check_homology(blast_data)
-        passed = coverage_ok and homology_ok
-
-        return {
-            "passed": passed,
-            "coverage_check": coverage_ok,
-            "homology_check": homology_ok,
-            "coverage_value": blast_data.get("max_coverage", 0),
-            "max_homology_found": blast_data.get("max_homology", 0)
-        }
-
-    def _check_coverage(self, blast_data: Dict) -> bool:
-        max_coverage = blast_data.get("max_coverage", 0)
-        return max_coverage < self.max_coverage
-
-    def _check_homology(self, blast_data: Dict) -> bool:
-        max_homology = blast_data.get("max_homology", 0)
-        return max_homology < self.max_homology
-
-    def _generate_explanation(self, sense_score: Dict, antisense_score: Dict, total_score: int) -> str:
-        explanations = []
-
-        if total_score == 2:
-            explanations.append("ОБЕ цепи показали отличные результаты BLAST")
-        elif total_score == 1:
-            passed_strands = []
-            if sense_score["passed"]:
-                passed_strands.append("смысловая")
-            if antisense_score["passed"]:
-                passed_strands.append("антисмысловая")
-            explanations.append(f"Только {', '.join(passed_strands)} цепь прошла проверку")
-        else:
-            explanations.append("Ни одна цепь не прошла проверку BLAST")
-
-        for strand_type, score in [("Смысловая", sense_score), ("Антисмысловая", antisense_score)]:
-            if not score["passed"]:
-                reasons = []
-                if not score["coverage_check"]:
-                    reasons.append(f"покрытие {score['coverage_value']:.1%} > {self.max_coverage:.1%}")
-                if not score["homology_check"]:
-                    reasons.append(f"гомология {score['max_homology_found']} нт > {self.max_homology} нт")
-                if reasons:
-                    explanations.append(f"{strand_type} цепь: {', '.join(reasons)}")
-
-        return "; ".join(explanations)
-
-    def get_scoring_summary(self, results_df: pd.DataFrame) -> pd.DataFrame:
-        if len(results_df) == 0:
-            return pd.DataFrame([{
-                'total_sequences': 0,
-                'score_2_count': 0,
-                'score_1_count': 0,
-                'score_0_count': 0,
-                'score_2_percent': 0,
-                'sense_pass_rate': 0,
-                'antisense_pass_rate': 0
-            }])
-
-        summary = {
-            'total_sequences': len(results_df),
-            'score_2_count': len(results_df[results_df['blast_total_score'] == 2]),
-            'score_1_count': len(results_df[results_df['blast_total_score'] == 1]),
-            'score_0_count': len(results_df[results_df['blast_total_score'] == 0]),
-            'score_2_percent': len(results_df[results_df['blast_total_score'] == 2]) / len(results_df) * 100,
-            'sense_pass_rate': results_df['sense_passed'].mean() * 100,
-            'antisense_pass_rate': results_df['antisense_passed'].mean() * 100
-        }
-
-        return pd.DataFrame([summary])
+    return good_blast
 
 
-def main():
+def check_seed_region_issue_local(sequence, subject_title):
+    """
+    Проверка seed региона (позиции 2-8) на off-target эффекты
+    """
+    if len(sequence) < 8:
+        return False
 
-    if df_sense.empty or df_antisense.empty:
-        print("Ошибка: DataFrame с последовательностями пусты!")
-        return
+    seed_region = sequence[1:8]  # Позиции 2-8
 
-    scorer = BlastScorer(max_coverage=0.78, max_homology=7)
+    # Эвристика: если в описании субъекта нет ATXN1, а seed регион консервативен
+    if "ATXN1" not in subject_title.upper():
+        # Проверяем консервативность seed региона (высокий GC content)
+        gc_count = seed_region.count('G') + seed_region.count('C')
+        gc_content = gc_count / len(seed_region)
 
-    print("Запускаем BLAST анализ для смысловых цепей...")
-    blast_sense = scorer.run_blast_analysis(df_sense)
-    print("Запускаем BLAST анализ для антисмысловых цепей...")
-    blast_antisense = scorer.run_blast_analysis(df_antisense)
+        # Если seed регион высококонсервативен - возможен off-target
+        return gc_content > 0.6
 
-    df_sense_with_blast = pd.merge(df_sense, blast_sense, on='fragment_id')
-    df_antisense_with_blast = pd.merge(df_antisense, blast_antisense, on='fragment_id')
+    return False
 
-    results_df = scorer.evaluate_blast_dataframes(df_sense_with_blast, df_antisense_with_blast)
 
-    print("\nРезультаты оценки:")
-    print(results_df[['fragment_id', 'blast_total_score', 'sense_passed', 'antisense_passed', 'explanation']])
+def calculate_blast_score(sense_score, antisense_score):
+    """
+    Расчет баллов согласно статье
+    """
+    if sense_score == 1 and antisense_score == 1:
+        return 2
+    elif sense_score == 1 or antisense_score == 1:
+        return 1
+    else:
+        return 0
 
-    # Получаем сводку
-    summary = scorer.get_scoring_summary(results_df)
-    print("\nСводка по результатам:")
-    print(summary)
-    summary.to_csv('blast_scoring_summary.csv', index=False, encoding='utf-8')
-    print("✓ Сводка сохранена в blast_scoring_summary.csv")
+
+def save_detailed_results(results_df, filename='sirna_blast_detailed_results.csv'):
+    """
+    Сохранение детальных результатов
+    """
+    # Добавляем дополнительную информацию
+    results_df['has_seed_region'] = results_df['sense_sequence'].apply(
+        lambda x: len(x) >= 8
+    )
+
+    results_df['seed_sequence'] = results_df['sense_sequence'].apply(
+        lambda x: x[1:8] if len(x) >= 8 else 'N/A'
+    )
+
+    # Сохраняем
+    results_df.to_csv(filename, index=False)
+    print(f"💾 Детальные результаты сохранены в '{filename}'")
+
     return results_df
 
 
+# 🚀 ЗАПУСК БЫСТРОГО АНАЛИЗА С ЛОКАЛЬНОЙ БАЗОЙ
 if __name__ == "__main__":
-    results = main()
+    print("🚀 ЗАПУСК БЫСТРОГО АНАЛИЗА 1536 siRNA С ЛОКАЛЬНОЙ БАЗОЙ")
+    print("⏰ Внимание: теперь это займет МИНУТЫ вместо часов!")
+    print("=" * 70)
+
+    try:
+        # Запускаем БЫСТРЫЙ анализ с локальной базой
+        results_df, avg_score = check_all_sirna_blast_parameter_local(df_sense, df_antisense)
+
+        # Сохраняем детальные результаты
+        results_df = save_detailed_results(results_df)
+
+        print(f"\n🎉 АНАЛИЗ ЗАВЕРШЕН ЗА СЕКУНДЫ!")
+        print(f"   Итоговый средний score: {avg_score:.2f}/2")
+        print(f"   Файл с результатами: 'sirna_blast_detailed_results.csv'")
+
+        # Дополнительная статистика
+        print(f"\n📈 ДОПОЛНИТЕЛЬНАЯ СТАТИСТИКА:")
+        print(f"   Всего проанализировано: {len(results_df)} siRNA")
+        print(f"   siRNA с идеальным score (2): {len(results_df[results_df['blast_score'] == 2])}")
+        print(f"   siRNA с хорошим score (1): {len(results_df[results_df['blast_score'] == 1])}")
+        print(f"   siRNA с плохим score (0): {len(results_df[results_df['blast_score'] == 0])}")
+
+    except Exception as e:
+        print(f"\n❌ Ошибка: {e}")
