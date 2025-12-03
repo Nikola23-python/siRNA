@@ -101,6 +101,7 @@ class analyz_rna:
             u_tenth_point = 1 if has_u_at_10 else 0
             results.append({
                 'sense': sequence,
+                'has_u_at_10': u_tenth_point,
                 'u_10_point': u_tenth_point,
             })
         db = pd.DataFrame(results)
@@ -117,6 +118,7 @@ class analyz_rna:
             no_g_thirteenth_point = 1 if hasnt_g_at_13 else 0
             results.append({
                 'sense': sequence,
+                'hasnt_g_at_13': no_g_thirteenth_point,
                 'no_g_13_point': no_g_thirteenth_point,
             })
         db = pd.DataFrame(results)
@@ -137,6 +139,7 @@ class analyz_rna:
                 no_g_c_at_19 = 0
             results.append({
                 'sense': sequence,
+                'no_g_c_at_19': no_g_c_at_19,
                 'no_g_c_19_point': no_g_c_at_19,
             })
         db = pd.DataFrame(results)
@@ -158,6 +161,7 @@ class analyz_rna:
                 a_at_3_19 = 0
             results.append({
                 'sense': sequence,
+                'a_at_3_19': a_at_3_19,
                 'a_at_3_19_point': a_at_3_19,
             })
         db = pd.DataFrame(results)
@@ -178,6 +182,7 @@ class analyz_rna:
                 g_c_5_end = 0
             results.append({
                 'sense': sequence,
+                'g_c_5_end': g_c_5_end,
                 'g_c_5_end_point': g_c_5_end,
             })
         db = pd.DataFrame(results)
@@ -196,6 +201,7 @@ class analyz_rna:
             a_at_6_point = 1 if a_at_6 else 0
             results.append({
             'antisense': sequence,
+            'a_at_6': a_at_6_point,
             'a_at_6_point': a_at_6_point,
             })
         db = pd.DataFrame(results)
@@ -216,6 +222,7 @@ class analyz_rna:
                 a_u_5_end = 0
             results.append({
                 'antisense': sequence,
+                'a_u_5_end': a_u_5_end,
                 'a_u_5_end_point': a_u_5_end,
             })
         db = pd.DataFrame(results)
@@ -252,7 +259,6 @@ class analyz_rna:
         return general_df[available_cols]
 
     def get_combined_data(self, columns_to_show=None):
-        """Объединяет все три метода и позволяет выбрать столбцы"""
         # Получаем DataFrame от всех методов
         df1 = self.analyze_gc().add_prefix('m1_')
         df2 = self.frequency_gc_at().add_prefix('m2_')

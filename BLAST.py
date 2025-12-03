@@ -1,261 +1,480 @@
 import pandas as pd
 import subprocess
 import os
-from tqdm import tqdm
-from Bio.Seq import Seq
 import tempfile
+from collections import defaultdict
+from tqdm import tqdm
+import multiprocessing as mp
+from functools import partial
 
+# Пути к данным
 from prepare_rna import df_sense, df_antisense
 
-# Путь к локальной BLAST базе
-BLAST_DB = os.path.expanduser("~/blast_dbs/human_refseq_complete")
+# Путь к BLAST базе
+BLAST_DB = "/home/nikolay/blast_dbs/human_refseq_complete"
 
 
-def check_all_sirna_blast_parameter_local(df_sense, df_antisense, gene_name="ATXN1"):
+def collect_all_unique_sequences():
+    print("📊 СБОР ВСЕХ УНИКАЛЬНЫХ ПОСЛЕДОВАТЕЛЬНОСТЕЙ")
+
+    unique_sequences = set()
+    seq_to_sirna = defaultdict(list)  # Сопоставление последовательности с siRNA
+
+    # Собираем sense strands
+    for idx, row in df_sense.iterrows():
+        seq = row['sequence']
+        fragment_id = row['fragment_id']
+        unique_sequences.add(seq)
+        seq_to_sirna[seq].append(('sense', fragment_id))
+
+    # Собираем antisense strands
+    for idx, row in df_antisense.iterrows():
+        seq = row['sequence']
+        fragment_id = row['fragment_id']
+        unique_sequences.add(seq)
+        seq_to_sirna[seq].append(('antisense', fragment_id))
+
+    print(f"   Всего последовательностей: {len(df_sense) + len(df_antisense)}")
+    print(f"   Уникальных последовательностей: {len(unique_sequences)}")
+    print(f"   Экономия: {100 - len(unique_sequences) / (len(df_sense) + len(df_antisense)) * 100:.1f}%")
+
+    return list(unique_sequences), seq_to_sirna
+
+
+def create_batch_files(sequences, batch_size=1000):
     """
-    ПРОВЕРКА BLAST ПАРАМЕТРА ДЛЯ ВСЕХ siRNA С ЛОКАЛЬНОЙ БАЗОЙ
+    Создание батч-файлов для BLAST
     """
-    print(f"🎯 ПРОВЕРКА BLAST ПАРАМЕТРА ДЛЯ ВСЕХ {len(df_sense)} siRNA")
-    print(f"💾 Используется локальная база: {BLAST_DB}")
-    print("=" * 70)
+    print(f"📁 СОЗДАНИЕ БАТЧ-ФАЙЛОВ (размер батча: {batch_size})")
 
-    # Проверяем что база существует
-    if not os.path.exists(BLAST_DB + ".nhr"):
-        print(f"❌ BLAST база не найдена: {BLAST_DB}")
-        print("💡 Убедитесь что база создана: ~/blast_dbs/human_refseq_complete")
-        return None, 0
+    batches = []
+    batch_dir = "blast_batches"
+    os.makedirs(batch_dir, exist_ok=True)
 
-    results = []
-    total_score = 0
+    for i in range(0, len(sequences), batch_size):
+        batch_seqs = sequences[i:i + batch_size]
+        batch_file = os.path.join(batch_dir, f"batch_{i // batch_size}.fasta")
 
-    # Используем tqdm для прогресс-бара
-    for idx in tqdm(range(len(df_sense)), desc="Анализ siRNA"):
-        sense_row = df_sense.iloc[idx]
-        antisense_row = df_antisense.iloc[idx]
+        with open(batch_file, 'w') as f:
+            for idx, seq in enumerate(batch_seqs):
+                seq_id = f"seq_{i + idx}"
+                f.write(f">{seq_id}\n{seq}\n")
 
-        sense_sequence = sense_row['sequence']
-        antisense_sequence = antisense_row['sequence']
-        fragment_id = sense_row['fragment_id']
-        size_nt = sense_row['size_nt']
-
-        # Пропускаем если последовательности не совпадают по длине
-        if len(sense_sequence) != len(antisense_sequence):
-            continue
-
-        # Проверяем каждую цепь через ЛОКАЛЬНЫЙ BLAST
-        sense_score = check_strand_specificity_local(sense_sequence, "СМЫСЛОВАЯ", fragment_id)
-        antisense_score = check_strand_specificity_local(antisense_sequence, "АНТИСМЫСЛОВАЯ", fragment_id)
-
-        # Применяем scoring систему из статьи
-        sirna_score = calculate_blast_score(sense_score, antisense_score)
-        total_score += sirna_score
-
-        # Сохраняем результаты
-        results.append({
-            'fragment_id': fragment_id,
-            'size_nt': size_nt,
-            'sense_sequence': sense_sequence,
-            'antisense_sequence': antisense_sequence,
-            'blast_score': sirna_score,
-            'sense_blast_result': sense_score,
-            'antisense_blast_result': antisense_score
+        batches.append({
+            'file': batch_file,
+            'sequences': batch_seqs,
+            'start_idx': i,
+            'batch_num': i // batch_size
         })
 
-    # Создаем DataFrame с результатами
-    results_df = pd.DataFrame(results)
-
-    # Статистика
-    avg_score = total_score / len(results) if results else 0
-
-    print(f"\n📊 ФИНАЛЬНАЯ СТАТИСТИКА:")
-    print(f"   Проанализировано siRNA: {len(results)}")
-    print(f"   Средний BLAST score: {avg_score:.2f}/2")
-
-    # Анализ распределения scores
-    score_distribution = results_df['blast_score'].value_counts().sort_index()
-    print(f"   Распределение scores:")
-    for score, count in score_distribution.items():
-        print(f"     • {score} баллов: {count} siRNA ({count / len(results) * 100:.1f}%)")
-
-    # Лучшие siRNA (score = 2)
-    best_sirnas = results_df[results_df['blast_score'] == 2]
-    print(f"   Лучших siRNA (2 балла): {len(best_sirnas)}")
-
-    if len(best_sirnas) > 0:
-        print(f"   Топ-10 лучших siRNA:")
-        for idx, row in best_sirnas.head(10).iterrows():
-            print(f"     • {row['fragment_id']} ({row['size_nt']}нт): {row['sense_sequence']}")
-
-    return results_df, avg_score
+    print(f"   Создано {len(batches)} батч-файлов")
+    return batches
 
 
-def check_strand_specificity_local(sequence, strand_type, fragment_id):
+def run_batch_blast(batch_info):
     """
-    Проверить специфичность одной цепи через ЛОКАЛЬНЫЙ BLAST
+    Запуск BLAST для одного батча
     """
+    batch_file = batch_info['file']
+    batch_num = batch_info['batch_num']
+    batch_size = len(batch_info['sequences'])
+
+    # Оптимизированные параметры для быстрого BLAST
+    cmd = [
+        "blastn",
+        "-query", batch_file,
+        "-db", BLAST_DB,
+        "-task", "blastn-short",
+        "-word_size", "11",  # Увеличили для скорости
+        "-evalue", "10",  # Быстрая фильтрация
+        "-outfmt", "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle",
+        "-num_alignments", "3",  # Только топ-3 результата
+        "-max_hsps", "1",  # Только лучшее выравнивание
+        "-perc_identity", "80",  # Минимум 80% идентичности
+        "-qcov_hsp_perc", "80",  # Минимум 80% покрытия
+        "-dust", "yes",  # Фильтр низкокомплексных регионов
+        "-num_threads", "2"  # Используем 2 потока
+    ]
+
     try:
-        # Создаем временный файл с последовательностью
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.fa', delete=False) as temp_file:
-            temp_file.write(f">{fragment_id}_{strand_type}\n{sequence}\n")
-            temp_filename = temp_file.name
+        # Запускаем BLAST
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5 минут таймаут
 
-        # Выполняем ЛОКАЛЬНЫЙ BLAST с параметрами из статьи
-        cmd = [
-            "blastn",
-            "-query", temp_filename,
-            "-db", BLAST_DB,
-            "-word_size", "7",  # Статья: word size = 7
-            "-evalue", "1000",  # Статья: E-value = 1000-3000
-            "-gapopen", "2",  # Статья: gap costs
-            "-gapextend", "1",  # Статья: gap costs
-            "-outfmt", "10 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle",
-            "-num_alignments", "10",  # Ограничиваем количество результатов
-            "-task", "blastn-short"  # Оптимизировано для коротких последовательностей
-        ]
+        # Парсим результаты
+        blast_results = defaultdict(list)
+        for line in result.stdout.strip().split('\n'):
+            if line and not line.startswith('#'):
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    seq_id = parts[0]  # Например: seq_0
+                    blast_results[seq_id].append(line)
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Логируем прогресс
+        with open(f"blast_batches/batch_{batch_num}_log.txt", 'w') as log:
+            log.write(f"Батч {batch_num}: {batch_size} последовательностей\n")
+            log.write(f"Найдено совпадений: {len(blast_results)}\n")
+            if result.stderr:
+                log.write(f"Ошибки: {result.stderr}\n")
 
-        # Удаляем временный файл
-        os.unlink(temp_filename)
+        return {
+            'batch_num': batch_num,
+            'blast_results': dict(blast_results),
+            'status': 'success',
+            'total_sequences': batch_size,
+            'matches_found': len(blast_results)
+        }
 
-        # Анализируем результаты BLAST
-        is_good = analyze_blast_results_local(result.stdout, sequence, strand_type, fragment_id)
-
-        return 1 if is_good else 0
-
+    except subprocess.TimeoutExpired:
+        return {
+            'batch_num': batch_num,
+            'blast_results': {},
+            'status': 'timeout',
+            'total_sequences': batch_size,
+            'matches_found': 0
+        }
     except Exception as e:
-        print(f"❌ Ошибка локального BLAST для {fragment_id} ({strand_type}): {e}")
-        return 0
+        return {
+            'batch_num': batch_num,
+            'blast_results': {},
+            'status': f'error: {str(e)}',
+            'total_sequences': batch_size,
+            'matches_found': 0
+        }
 
 
-def analyze_blast_results_local(blast_output, sequence, strand_type, fragment_id):
+def process_all_batches_parallel(batches, num_workers=4):
     """
-    Анализ результатов ЛОКАЛЬНОГО BLAST по критериям из статьи
+    Параллельная обработка всех батчей
     """
-    lines = [line.strip() for line in blast_output.strip().split('\n') if line.strip()]
+    print(f"⚡ ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА BLAST ({num_workers} потоков)")
 
-    # Если нет выравниваний - отлично!
-    if not lines:
-        return True
+    with mp.Pool(processes=num_workers) as pool:
+        results = list(tqdm(
+            pool.imap(run_batch_blast, batches),
+            total=len(batches),
+            desc="BLAST обработка"
+        ))
 
-    good_blast = True
-    issues = []
+    return results
+
+
+def analyze_blast_results_simple(blast_output, sequence):
+    """
+    Простой анализ результатов BLAST:
+    Возвращает True если специфично (нет off-target), False если есть проблемы
+    """
+    if not blast_output:
+        return True, "No hits"  # Нет совпадений - отлично!
+
+    lines = blast_output.strip().split('\n')
 
     for line in lines:
-        parts = line.split(',')
-        if len(parts) >= 12:
-            try:
-                pident = float(parts[2])  # % идентичности
-                length = int(parts[3])  # длина выравнивания
-                evalue = float(parts[10])  # e-value
-                subject_title = parts[12] if len(parts) > 12 else ""  # описание субъекта
+        parts = line.split('\t')
+        if len(parts) >= 13:
+            subject_title = parts[12]
+            pident = float(parts[2])
+            length = int(parts[3])
 
-                # КРИТЕРИИ из статьи:
-                # 1. Покрытие < 78%
-                query_coverage = (length / len(sequence)) * 100
-                if query_coverage > 78:
-                    good_blast = False
-                    issues.append(f"покрытие {query_coverage:.1f}%")
+            # Если это не наш целевой ген ATXN1
+            if "ATXN1" not in subject_title.upper():
+                # Проверяем качество совпадения
+                coverage = (length / len(sequence)) * 100
+                if coverage > 70 and pident > 70:  # Хорошее совпадение с другим геном
+                    return False, f"Match to {subject_title} ({coverage:.1f}%, {pident:.1f}% id)"
 
-                # 2. Совпадений < 15 из 19 (или пропорционально длине)
-                matches = int(length * pident / 100)
-                max_allowed_matches = min(15, len(sequence) - 2)
-                if matches >= max_allowed_matches:
-                    good_blast = False
-                    issues.append(f"совпадений {matches}/{len(sequence)}")
-
-                # 3. Проверка seed региона (только для смысловой цепи)
-                if strand_type == "СМЫСЛОВАЯ" and len(sequence) >= 8:
-                    if check_seed_region_issue_local(sequence, subject_title):
-                        good_blast = False
-                        issues.append("seed регион")
-
-            except (ValueError, IndexError):
-                continue
-
-    # Логируем проблемы только для первых нескольких siRNA чтобы не засорять вывод
-    if not good_blast and len(issues) > 0 and int(fragment_id.split('_')[1]) < 10:
-        print(f"⚠️  {fragment_id} ({strand_type}): {', '.join(set(issues))}")
-
-    return good_blast
+    return True, "Specific"
 
 
-def check_seed_region_issue_local(sequence, subject_title):
+def compile_results(batch_results, sequences, seq_to_sirna):
     """
-    Проверка seed региона (позиции 2-8) на off-target эффекты
+    Компиляция всех результатов
     """
-    if len(sequence) < 8:
-        return False
+    print("📊 КОМПИЛЯЦИЯ РЕЗУЛЬТАТОВ")
 
-    seed_region = sequence[1:8]  # Позиции 2-8
+    # Создаем словарь для результатов каждой последовательности
+    sequence_results = {}
 
-    # Эвристика: если в описании субъекта нет ATXN1, а seed регион консервативен
-    if "ATXN1" not in subject_title.upper():
-        # Проверяем консервативность seed региона (высокий GC content)
-        gc_count = seed_region.count('G') + seed_region.count('C')
-        gc_content = gc_count / len(seed_region)
+    # Обрабатываем результаты батчей
+    for batch in batch_results:
+        if batch['status'] != 'success':
+            continue
 
-        # Если seed регион высококонсервативен - возможен off-target
-        return gc_content > 0.6
+        for seq_id, blast_output in batch['blast_results'].items():
+            # Извлекаем индекс из seq_id (например, seq_123 -> 123)
+            idx = int(seq_id.split('_')[1])
 
-    return False
+            # Находим соответствующую последовательность
+            if idx < len(sequences):
+                seq = sequences[idx]
+                is_specific, reason = analyze_blast_results_simple('\n'.join(blast_output), seq)
+                sequence_results[seq] = {
+                    'specific': is_specific,
+                    'reason': reason,
+                    'hits_count': len(blast_output)
+                }
+
+    # Теперь собираем результаты по siRNA
+    sirna_results = []
+
+    print("🧬 СБОР РЕЗУЛЬТАТОВ ПО siRNA...")
+    for fragment_id in tqdm(df_sense['fragment_id'].unique(), desc="Обработка siRNA"):
+        # Находим sense и antisense последовательности для этой siRNA
+        sense_row = df_sense[df_sense['fragment_id'] == fragment_id].iloc[0]
+        anti_row = df_antisense[df_antisense['fragment_id'] == fragment_id].iloc[0]
+
+        sense_seq = sense_row['sequence']
+        anti_seq = anti_row['sequence']
+        size_nt = sense_row['size_nt']
+
+        # Получаем результаты для sense
+        sense_result = sequence_results.get(sense_seq, {'specific': True, 'reason': 'No data', 'hits_count': 0})
+        anti_result = sequence_results.get(anti_seq, {'specific': True, 'reason': 'No data', 'hits_count': 0})
+
+        # Подсчет BLAST score
+        if sense_result['specific'] and anti_result['specific']:
+            blast_score = 2
+        elif sense_result['specific'] or anti_result['specific']:
+            blast_score = 1
+        else:
+            blast_score = 0
+
+        sirna_results.append({
+            'fragment_id': fragment_id,
+            'size_nt': size_nt,
+            'sense_sequence': sense_seq,
+            'antisense_sequence': anti_seq,
+            'sense_specific': sense_result['specific'],
+            'antisense_specific': anti_result['specific'],
+            'sense_hits': sense_result['hits_count'],
+            'antisense_hits': anti_result['hits_count'],
+            'sense_reason': sense_result['reason'],
+            'antisense_reason': anti_result['reason'],
+            'blast_score': blast_score
+        })
+
+    return pd.DataFrame(sirna_results)
 
 
-def calculate_blast_score(sense_score, antisense_score):
+def save_and_analyze_results(results_df):
     """
-    Расчет баллов согласно статье
+    Сохранение и анализ результатов
     """
-    if sense_score == 1 and antisense_score == 1:
-        return 2
-    elif sense_score == 1 or antisense_score == 1:
-        return 1
-    else:
-        return 0
+    print("\n💾 СОХРАНЕНИЕ РЕЗУЛЬТАТОВ")
+
+    # Сохраняем все результаты
+    results_df.to_csv('sirna_blast_only_results.csv', index=False)
+
+    # Фильтруем только хорошие siRNA (score 2)
+    good_sirnas = results_df[results_df['blast_score'] == 2]
+    good_sirnas.to_csv('sirna_blast_good_results.csv', index=False)
+
+    # Статистика
+    total = len(results_df)
+    score_2 = len(good_sirnas)
+    score_1 = len(results_df[results_df['blast_score'] == 1])
+    score_0 = len(results_df[results_df['blast_score'] == 0])
+
+    print(f"📊 СТАТИСТИКА BLAST ПРОВЕРКИ:")
+    print(f"   Всего siRNA: {total}")
+    print(f"   Score 2 (обе цепи специфичны): {score_2} ({score_2 / total * 100:.1f}%)")
+    print(f"   Score 1 (одна цепь специфична): {score_1} ({score_1 / total * 100:.1f}%)")
+    print(f"   Score 0 (обе цепи неспецифичны): {score_0} ({score_0 / total * 100:.1f}%)")
+
+    # Топ-10 лучших siRNA
+    print(f"\n🏆 ТОП-10 ЛУЧШИХ siRNA (по BLAST score):")
+    for idx, row in good_sirnas.head(10).iterrows():
+        print(f"   {row['fragment_id']} ({row['size_nt']}нт):")
+        print(f"     Sense: {row['sense_sequence']}")
+        print(f"     Anti:  {row['antisense_sequence']}")
+
+    # Причины проблем
+    if score_0 > 0:
+        problematic = results_df[results_df['blast_score'] == 0]
+        print(f"\n⚠️  ПРИЧИНЫ ПРОБЛЕМ (первые 5):")
+        for idx, row in problematic.head(5).iterrows():
+            print(f"   {row['fragment_id']}:")
+            if not row['sense_specific']:
+                print(f"     Sense: {row['sense_reason']}")
+            if not row['antisense_specific']:
+                print(f"     Anti:  {row['antisense_reason']}")
+
+    print(f"\n💾 ФАЙЛЫ:")
+    print(f"   • Все результаты: sirna_blast_only_results.csv")
+    print(f"   • Хорошие siRNA (score 2): sirna_blast_good_results.csv")
 
 
-def save_detailed_results(results_df, filename='sirna_blast_detailed_results.csv'):
+def main_full_blast_check():
     """
-    Сохранение детальных результатов
+    Полная проверка ВСЕХ siRNA через BLAST
     """
-    # Добавляем дополнительную информацию
-    results_df['has_seed_region'] = results_df['sense_sequence'].apply(
-        lambda x: len(x) >= 8
-    )
+    print("=" * 80)
+    print("🔥 ПОЛНАЯ BLAST ПРОВЕРКА ВСЕХ siRNA (32888 пар)")
+    print("=" * 80)
 
-    results_df['seed_sequence'] = results_df['sense_sequence'].apply(
-        lambda x: x[1:8] if len(x) >= 8 else 'N/A'
-    )
+    # Шаг 1: Сбор всех уникальных последовательностей
+    sequences, seq_to_sirna = collect_all_unique_sequences()
 
-    # Сохраняем
-    results_df.to_csv(filename, index=False)
-    print(f"💾 Детальные результаты сохранены в '{filename}'")
+    # Шаг 2: Создание батч-файлов
+    batches = create_batch_files(sequences, batch_size=500)  # 500 последовательностей в батче
+
+    # Шаг 3: Параллельная обработка
+    print("\n⚡ ЗАПУСК ПАРАЛЛЕЛЬНОГО BLAST...")
+    print("   Это может занять 30-60 минут в зависимости от системы")
+
+    batch_results = process_all_batches_parallel(batches, num_workers=4)
+
+    # Шаг 4: Анализ статусов батчей
+    print("\n📈 СТАТУСЫ БАТЧЕЙ:")
+    status_counts = {}
+    for batch in batch_results:
+        status = batch['status']
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    for status, count in status_counts.items():
+        print(f"   {status}: {count} батчей")
+
+    # Шаг 5: Компиляция результатов
+    print("\n📊 КОМПИЛЯЦИЯ ВСЕХ РЕЗУЛЬТАТОВ...")
+    results_df = compile_results(batch_results, sequences, seq_to_sirna)
+
+    # Шаг 6: Сохранение и анализ
+    save_and_analyze_results(results_df)
+
+    print("\n✅ ПОЛНАЯ BLAST ПРОВЕРКА ЗАВЕРШЕНА!")
+    print(f"   Проверено: {len(results_df)} siRNA")
+    print(f"   Найдено специфичных: {len(results_df[results_df['blast_score'] == 2])}")
 
     return results_df
 
 
-# 🚀 ЗАПУСК БЫСТРОГО АНАЛИЗА С ЛОКАЛЬНОЙ БАЗОЙ
+def quick_blast_check():
+    """
+    Быстрая проверка (только первые 1000 siRNA)
+    """
+    print("🚀 БЫСТРАЯ ПРОВЕРКА (первые 1000 siRNA)")
+
+    # Берем первые 1000 siRNA
+    df_sense_small = df_sense.head(1000)
+    df_antisense_small = df_antisense.head(1000)
+
+    # Собираем уникальные последовательности
+    sequences = set()
+    for seq in df_sense_small['sequence']:
+        sequences.add(seq)
+    for seq in df_antisense_small['sequence']:
+        sequences.add(seq)
+
+    sequences = list(sequences)
+    print(f"   Уникальных последовательностей: {len(sequences)}")
+
+    # Создаем один батч
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.fa', delete=False) as f:
+        for idx, seq in enumerate(sequences):
+            f.write(f">seq_{idx}\n{seq}\n")
+        batch_file = f.name
+
+    # Запускаем BLAST
+    cmd = [
+        "blastn",
+        "-query", batch_file,
+        "-db", BLAST_DB,
+        "-task", "blastn-short",
+        "-word_size", "11",
+        "-evalue", "10",
+        "-outfmt", "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle",
+        "-num_alignments", "3",
+        "-max_hsps", "1",
+        "-perc_identity", "70",
+        "-qcov_hsp_perc", "50",
+        "-dust", "yes"
+    ]
+
+    print("   Запуск BLAST...")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    os.unlink(batch_file)
+
+    # Парсим результаты
+    blast_results = defaultdict(list)
+    for line in result.stdout.strip().split('\n'):
+        if line and not line.startswith('#'):
+            parts = line.split('\t')
+            if len(parts) >= 2:
+                seq_id = parts[0]
+                blast_results[seq_id].append(line)
+
+    print(f"   Найдено совпадений для {len(blast_results)} последовательностей")
+
+    # Анализируем результаты
+    results = []
+    for idx in range(len(df_sense_small)):
+        sense_row = df_sense_small.iloc[idx]
+        anti_row = df_antisense_small.iloc[idx]
+
+        sense_seq = sense_row['sequence']
+        anti_seq = anti_row['sequence']
+
+        # Находим индексы последовательностей
+        sense_idx = sequences.index(sense_seq) if sense_seq in sequences else -1
+        anti_idx = sequences.index(anti_seq) if anti_seq in sequences else -1
+
+        # Проверяем специфичность
+        sense_specific = True
+        anti_specific = True
+
+        if sense_idx != -1 and f"seq_{sense_idx}" in blast_results:
+            sense_output = '\n'.join(blast_results[f"seq_{sense_idx}"])
+            sense_specific, _ = analyze_blast_results_simple(sense_output, sense_seq)
+
+        if anti_idx != -1 and f"seq_{anti_idx}" in blast_results:
+            anti_output = '\n'.join(blast_results[f"seq_{anti_idx}"])
+            anti_specific, _ = analyze_blast_results_simple(anti_output, anti_seq)
+
+        # Подсчет score
+        if sense_specific and anti_specific:
+            blast_score = 2
+        elif sense_specific or anti_specific:
+            blast_score = 1
+        else:
+            blast_score = 0
+
+        results.append({
+            'fragment_id': sense_row['fragment_id'],
+            'size_nt': sense_row['size_nt'],
+            'sense_sequence': sense_seq,
+            'antisense_sequence': anti_seq,
+            'blast_score': blast_score
+        })
+
+    results_df = pd.DataFrame(results)
+
+    # Статистика
+    score_2 = len(results_df[results_df['blast_score'] == 2])
+    score_1 = len(results_df[results_df['blast_score'] == 1])
+    score_0 = len(results_df[results_df['blast_score'] == 0])
+
+    print(f"\n📊 СТАТИСТИКА:")
+    print(f"   Score 2: {score_2} siRNA")
+    print(f"   Score 1: {score_1} siRNA")
+    print(f"   Score 0: {score_0} siRNA")
+
+    # Сохраняем
+    results_df.to_csv('sirna_blast_quick_check.csv', index=False)
+    print(f"\n💾 Результаты сохранены в 'sirna_blast_quick_check.csv'")
+
+    return results_df
+
+
 if __name__ == "__main__":
-    print("🚀 ЗАПУСК БЫСТРОГО АНАЛИЗА 1536 siRNA С ЛОКАЛЬНОЙ БАЗОЙ")
-    print("⏰ Внимание: теперь это займет МИНУТЫ вместо часов!")
-    print("=" * 70)
+    print("Выберите режим:")
+    print("1. Полная проверка всех siRNA (32888 пар) - 30-60 минут")
+    print("2. Быстрая проверка (первые 1000 siRNA) - 5 минут")
 
-    try:
-        # Запускаем БЫСТРЫЙ анализ с локальной базой
-        results_df, avg_score = check_all_sirna_blast_parameter_local(df_sense, df_antisense)
+    choice = input("Введите 1 или 2: ")
 
-        # Сохраняем детальные результаты
-        results_df = save_detailed_results(results_df)
-
-        print(f"\n🎉 АНАЛИЗ ЗАВЕРШЕН ЗА СЕКУНДЫ!")
-        print(f"   Итоговый средний score: {avg_score:.2f}/2")
-        print(f"   Файл с результатами: 'sirna_blast_detailed_results.csv'")
-
-        # Дополнительная статистика
-        print(f"\n📈 ДОПОЛНИТЕЛЬНАЯ СТАТИСТИКА:")
-        print(f"   Всего проанализировано: {len(results_df)} siRNA")
-        print(f"   siRNA с идеальным score (2): {len(results_df[results_df['blast_score'] == 2])}")
-        print(f"   siRNA с хорошим score (1): {len(results_df[results_df['blast_score'] == 1])}")
-        print(f"   siRNA с плохим score (0): {len(results_df[results_df['blast_score'] == 0])}")
-
-    except Exception as e:
-        print(f"\n❌ Ошибка: {e}")
+    if choice == "1":
+        results = main_full_blast_check()
+    elif choice == "2":
+        results = quick_blast_check()
+    else:
+        print("Неверный выбор. Запускаю быструю проверку...")
+        results = quick_blast_check()

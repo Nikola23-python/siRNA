@@ -23,7 +23,7 @@ class editor_rna:
         fragments_list = []
         print(f"Длина фрагмента для нарезки: {len(sense)} нуклеотидов")
         for fragment_size in range(start_size, end_size):
-            for start_pos in range(0, len(sense), fragment_size):
+            for start_pos in range(0, len(sense) - fragment_size + 1):
                 end_pos = start_pos + fragment_size
                 if end_pos > len(sense):
                     break
@@ -52,7 +52,7 @@ class editor_rna:
         fragments_list = []
         print(f"Длина фрагмента для нарезки: {len(antisense)} нуклеотидов")
         for fragment_size in range(start_size, end_size):
-            for start_pos in range(0, len(antisense), fragment_size):
+            for start_pos in range(0, len(antisense) - fragment_size + 1):
                 end_pos = start_pos + fragment_size
                 if end_pos > len(antisense):
                     break
