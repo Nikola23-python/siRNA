@@ -85,14 +85,14 @@ def run_batch_blast(batch_info):
         "-query", batch_file,
         "-db", BLAST_DB,
         "-task", "blastn-short",
-        "-word_size", "11",  # Увеличили для скорости
-        "-evalue", "10",  # Быстрая фильтрация
+        "-word_size", "7",  # Увеличили для скорости
+        "-evalue", "1000",  # Быстрая фильтрация
         "-outfmt", "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle",
-        "-num_alignments", "3",  # Только топ-3 результата
-        "-max_hsps", "1",  # Только лучшее выравнивание
-        "-perc_identity", "80",  # Минимум 80% идентичности
-        "-qcov_hsp_perc", "80",  # Минимум 80% покрытия
-        "-dust", "yes",  # Фильтр низкокомплексных регионов
+        "-num_alignments", "10",  # Только топ-3 результата
+        "-max_hsps", "3",  # Только лучшее выравнивание
+        "-perc_identity", "70",  # Минимум 80% идентичности
+        "-qcov_hsp_perc", "50",  # Минимум 80% покрытия
+        "-dust", "no",  # Фильтр низкокомплексных регионов
         "-num_threads", "2"  # Используем 2 потока
     ]
 
