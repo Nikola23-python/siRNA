@@ -15,7 +15,7 @@ BLAST_DB = "/home/nikolay/blast_dbs/human_refseq_complete"
 
 
 def collect_all_unique_sequences():
-    print("📊 СБОР ВСЕХ УНИКАЛЬНЫХ ПОСЛЕДОВАТЕЛЬНОСТЕЙ")
+    print(" СБОР ВСЕХ УНИКАЛЬНЫХ ПОСЛЕДОВАТЕЛЬНОСТЕЙ")
 
     unique_sequences = set()
     seq_to_sirna = defaultdict(list)  # Сопоставление последовательности с siRNA
@@ -42,10 +42,7 @@ def collect_all_unique_sequences():
 
 
 def create_batch_files(sequences, batch_size=1000):
-    """
-    Создание батч-файлов для BLAST
-    """
-    print(f"📁 СОЗДАНИЕ БАТЧ-ФАЙЛОВ (размер батча: {batch_size})")
+    print(f" СОЗДАНИЕ БАТЧ-ФАЙЛОВ (размер батча: {batch_size})")
 
     batches = []
     batch_dir = "blast_batches"
@@ -72,9 +69,6 @@ def create_batch_files(sequences, batch_size=1000):
 
 
 def run_batch_blast(batch_info):
-    """
-    Запуск BLAST для одного батча
-    """
     batch_file = batch_info['file']
     batch_num = batch_info['batch_num']
     batch_size = len(batch_info['sequences'])
@@ -143,10 +137,7 @@ def run_batch_blast(batch_info):
 
 
 def process_all_batches_parallel(batches, num_workers=4):
-    """
-    Параллельная обработка всех батчей
-    """
-    print(f"⚡ ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА BLAST ({num_workers} потоков)")
+    print(f" ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА BLAST ({num_workers} потоков)")
 
     with mp.Pool(processes=num_workers) as pool:
         results = list(tqdm(
@@ -159,10 +150,6 @@ def process_all_batches_parallel(batches, num_workers=4):
 
 
 def analyze_blast_results_simple(blast_output, sequence):
-    """
-    Простой анализ результатов BLAST:
-    Возвращает True если специфично (нет off-target), False если есть проблемы
-    """
     if not blast_output:
         return True, "No hits"  # Нет совпадений - отлично!
 
@@ -186,10 +173,7 @@ def analyze_blast_results_simple(blast_output, sequence):
 
 
 def compile_results(batch_results, sequences, seq_to_sirna):
-    """
-    Компиляция всех результатов
-    """
-    print("📊 КОМПИЛЯЦИЯ РЕЗУЛЬТАТОВ")
+    print(" КОМПИЛЯЦИЯ РЕЗУЛЬТАТОВ")
 
     # Создаем словарь для результатов каждой последовательности
     sequence_results = {}
@@ -216,7 +200,7 @@ def compile_results(batch_results, sequences, seq_to_sirna):
     # Теперь собираем результаты по siRNA
     sirna_results = []
 
-    print("🧬 СБОР РЕЗУЛЬТАТОВ ПО siRNA...")
+    print(" СБОР РЕЗУЛЬТАТОВ ПО siRNA...")
     for fragment_id in tqdm(df_sense['fragment_id'].unique(), desc="Обработка siRNA"):
         # Находим sense и antisense последовательности для этой siRNA
         sense_row = df_sense[df_sense['fragment_id'] == fragment_id].iloc[0]
@@ -259,7 +243,7 @@ def save_and_analyze_results(results_df):
     """
     Сохранение и анализ результатов
     """
-    print("\n💾 СОХРАНЕНИЕ РЕЗУЛЬТАТОВ")
+    print("\n СОХРАНЕНИЕ РЕЗУЛЬТАТОВ")
 
     # Сохраняем все результаты
     results_df.to_csv('sirna_blast_only_results.csv', index=False)
@@ -281,7 +265,7 @@ def save_and_analyze_results(results_df):
     print(f"   Score 0 (обе цепи неспецифичны): {score_0} ({score_0 / total * 100:.1f}%)")
 
     # Топ-10 лучших siRNA
-    print(f"\n🏆 ТОП-10 ЛУЧШИХ siRNA (по BLAST score):")
+    print(f"\n ТОП-10 ЛУЧШИХ siRNA (по BLAST score):")
     for idx, row in good_sirnas.head(10).iterrows():
         print(f"   {row['fragment_id']} ({row['size_nt']}нт):")
         print(f"     Sense: {row['sense_sequence']}")
@@ -290,7 +274,7 @@ def save_and_analyze_results(results_df):
     # Причины проблем
     if score_0 > 0:
         problematic = results_df[results_df['blast_score'] == 0]
-        print(f"\n⚠️  ПРИЧИНЫ ПРОБЛЕМ (первые 5):")
+        print(f"\n  ПРИЧИНЫ ПРОБЛЕМ (первые 5):")
         for idx, row in problematic.head(5).iterrows():
             print(f"   {row['fragment_id']}:")
             if not row['sense_specific']:
@@ -298,17 +282,14 @@ def save_and_analyze_results(results_df):
             if not row['antisense_specific']:
                 print(f"     Anti:  {row['antisense_reason']}")
 
-    print(f"\n💾 ФАЙЛЫ:")
+    print(f"\n ФАЙЛЫ:")
     print(f"   • Все результаты: sirna_blast_only_results.csv")
     print(f"   • Хорошие siRNA (score 2): sirna_blast_good_results.csv")
 
 
 def main_full_blast_check():
-    """
-    Полная проверка ВСЕХ siRNA через BLAST
-    """
     print("=" * 80)
-    print("🔥 ПОЛНАЯ BLAST ПРОВЕРКА ВСЕХ siRNA (32888 пар)")
+    print(" ПОЛНАЯ BLAST ПРОВЕРКА ВСЕХ siRNA (32888 пар)")
     print("=" * 80)
 
     # Шаг 1: Сбор всех уникальных последовательностей
@@ -340,7 +321,7 @@ def main_full_blast_check():
     # Шаг 6: Сохранение и анализ
     save_and_analyze_results(results_df)
 
-    print("\n✅ ПОЛНАЯ BLAST ПРОВЕРКА ЗАВЕРШЕНА!")
+    print("\n ПОЛНАЯ BLAST ПРОВЕРКА ЗАВЕРШЕНА!")
     print(f"   Проверено: {len(results_df)} siRNA")
     print(f"   Найдено специфичных: {len(results_df[results_df['blast_score'] == 2])}")
 
@@ -348,10 +329,7 @@ def main_full_blast_check():
 
 
 def quick_blast_check():
-    """
-    Быстрая проверка (только первые 1000 siRNA)
-    """
-    print("🚀 БЫСТРАЯ ПРОВЕРКА (первые 1000 siRNA)")
+    print("БЫСТРАЯ ПРОВЕРКА (первые 1000 siRNA)")
 
     # Берем первые 1000 siRNA
     df_sense_small = df_sense.head(1000)
@@ -459,7 +437,7 @@ def quick_blast_check():
 
     # Сохраняем
     results_df.to_csv('sirna_blast_quick_check.csv', index=False)
-    print(f"\n💾 Результаты сохранены в 'sirna_blast_quick_check.csv'")
+    print(f"\nРезультаты сохранены в 'sirna_blast_quick_check.csv'")
 
     return results_df
 
