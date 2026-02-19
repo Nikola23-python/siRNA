@@ -11,8 +11,8 @@ from functools import partial
 from prepare_rna import df_sense, df_antisense
 
 # Путь к BLAST базе
-BLAST_DB = "/home/nikolay/blast_dbs/human_refseq_complete"
-
+BLAST_DB = "/home/nikolay/PycharmProjects/mRNA/BLAST/blast_dbs2/human_refseq"  #(для новой базы)
+#BLAST_DB = "/home/nikolay/blast_dbs/human_refseq_complete" #(для старой базы)
 
 def collect_all_unique_sequences():
     print(" СБОР ВСЕХ УНИКАЛЬНЫХ ПОСЛЕДОВАТЕЛЬНОСТЕЙ")

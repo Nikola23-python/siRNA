@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import RNA
 import pandas as pd
 
 from prepare_rna import df_sense, df_antisense
@@ -62,7 +63,7 @@ class analyz_rna:
 
             frequency_point = 0 if gc_frequency > 3 else 0 if au_frequency > 4 else 1
             results.append({
-                'sense': sequence,
+                # 'sense': sequence,
                 'gc_frequency': gc_frequency,
                 'au_frequency': au_frequency,
                 'frequency_point': frequency_point
@@ -100,7 +101,7 @@ class analyz_rna:
             has_u_at_10 = (tenth_nucleotide == 'U')
             u_tenth_point = 1 if has_u_at_10 else 0
             results.append({
-                'sense': sequence,
+                # 'sense': sequence,
                 'has_u_at_10': u_tenth_point,
                 'u_10_point': u_tenth_point,
             })
@@ -117,7 +118,7 @@ class analyz_rna:
             hasnt_g_at_13 = (thirteenth_nucleotide != 'G')
             no_g_thirteenth_point = 1 if hasnt_g_at_13 else 0
             results.append({
-                'sense': sequence,
+                # 'sense': sequence,
                 'hasnt_g_at_13': no_g_thirteenth_point,
                 'no_g_13_point': no_g_thirteenth_point,
             })
@@ -138,7 +139,7 @@ class analyz_rna:
             else:
                 no_g_c_at_19 = 0
             results.append({
-                'sense': sequence,
+                # 'sense': sequence,
                 'no_g_c_at_19': no_g_c_at_19,
                 'no_g_c_19_point': no_g_c_at_19,
             })
@@ -160,7 +161,7 @@ class analyz_rna:
             else:
                 a_at_3_19 = 0
             results.append({
-                'sense': sequence,
+                # 'sense': sequence,
                 'a_at_3_19': a_at_3_19,
                 'a_at_3_19_point': a_at_3_19,
             })
@@ -181,7 +182,7 @@ class analyz_rna:
             else:
                 g_c_5_end = 0
             results.append({
-                'sense': sequence,
+                # 'sense': sequence,
                 'g_c_5_end': g_c_5_end,
                 'g_c_5_end_point': g_c_5_end,
             })
@@ -221,13 +222,90 @@ class analyz_rna:
             else:
                 a_u_5_end = 0
             results.append({
-                'antisense': sequence,
+                # 'antisense': sequence,
                 'a_u_5_end': a_u_5_end,
                 'a_u_5_end_point': a_u_5_end,
             })
         db = pd.DataFrame(results)
         return db
 
+
+    def apply_rna_fold(self):
+        """Применяет RNA fold к DataFrame и возвращает результаты"""
+
+        results = []
+
+        for idx, row in self.df_sense.iterrows():
+            fragment_id = row['fragment_id']
+            sequence = row['sequence']
+
+            try:
+                structure, mfe = RNA.fold(sequence)
+
+                results.append({
+                    # 'fragment_id': fragment_id,
+                    # 'sequence': sequence,
+                    # 'structure': structure,  # Складчатая структура в скобочной нотации
+                    'mfe': mfe,  # Minimal Free Energy
+                    # 'sequence_length': len(sequence)
+                })
+
+            except Exception as e:
+                print(f"Ошибка для {fragment_id}: {e}")
+                results.append({
+                    # 'fragment_id': fragment_id,
+                    # 'sequence': sequence,
+                    # 'structure': 'ERROR',
+                    'mfe': None,
+                    # 'sequence_length': len(sequence)
+                })
+
+        return pd.DataFrame(results)
+
+    def sirna_duplex_analysis(self, name=""):
+        """Анализ дуплексов для siRNA из DataFrame"""
+
+        results = []
+
+        # Предполагаем, что DataFrame имеют колонку 'sequence'
+        for idx, (sense_row, antisense_row) in enumerate(zip(self.df_sense.iterrows(), self.df_antisense.iterrows())):
+            sense_idx, sense_data = sense_row
+            antisense_idx, antisense_data = antisense_row
+
+            sense_seq = sense_data['sequence']  # Получаем последовательность
+            antisense_seq = antisense_data['sequence']  # Получаем последовательность
+
+            try:
+                # RNA duplex для двух цепей siRNA
+                duplex_result = RNA.duplexfold(sense_seq, antisense_seq)
+
+                results.append({
+                    # 'sense_id': sense_data.get('fragment_id', f'sense_{idx}'),
+                    # 'antisense_id': antisense_data.get('fragment_id', f'antisense_{idx}'),
+                    # 'sense_sequence': sense_seq,
+                    # 'antisense_sequence': antisense_seq,
+                    # 'duplex_structure': duplex_result.structure,
+                    'duplex_energy': duplex_result.energy,
+                    'position_i': duplex_result.i,
+                    'position_j': duplex_result.j
+                })
+
+                print(f"Duplex {idx + 1}: {duplex_result.energy:.2f} kcal/mol")
+
+            except Exception as e:
+                print(f"Ошибка для пары {idx}: {e}")
+                results.append({
+                    'sense_id': sense_data.get('fragment_id', f'sense_{idx}'),
+                    'antisense_id': antisense_data.get('fragment_id', f'antisense_{idx}'),
+                    'sense_sequence': sense_seq,
+                    'antisense_sequence': antisense_seq,
+                    'duplex_structure': 'ERROR',
+                    'duplex_energy': None,
+                    'position_i': None,
+                    'position_j': None
+                })
+
+        return pd.DataFrame(results)
 
     """Вывод информации"""
 
@@ -262,7 +340,7 @@ class analyz_rna:
         # Получаем DataFrame от всех методов
         df1 = self.analyze_gc().add_prefix('m1_')
         df2 = self.frequency_gc_at().add_prefix('m2_')
-        df3 = self.add_dt_overhangs().add_prefix('m3_')
+        # df3 = self.add_dt_overhangs().add_prefix('m3_')
         df4 = self.u_at_10().add_prefix('m4_')
         df5 = self.no_g_at_13().add_prefix('m5_')
         df6 = self.no_g_c_at_19().add_prefix('m6_')
@@ -270,9 +348,12 @@ class analyz_rna:
         df8 = self.strong_pairing_5_end().add_prefix('m8_')
         df9 = self.a_at_6().add_prefix('m9_')
         df10 = self.weak_pairing_5_end().add_prefix('m10_')
+        # df11 = self.apply_rna_fold().add_prefix('m11_')
+        # df12 = self.sirna_duplex_analysis().add_prefix('m12_')
 
-        combined_df = pd.concat([df1, df2, df3, df4, df5, df6, df7, df8, df9, df10], axis=1)
-
+        combined_df = pd.concat([df1, df2, df4, df5, df6, df7, df8, df9, df10], axis=1)
+        point_columns = [col for col in combined_df.columns if 'point' in col]
+        combined_df['total_points'] = combined_df[point_columns].sum(axis=1)
         if columns_to_show:
             available_columns = [col for col in columns_to_show if col in combined_df.columns]
             combined_df = combined_df[available_columns]

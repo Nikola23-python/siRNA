@@ -1,7 +1,7 @@
 from datetime import datetime
 import pandas as pd
 from Bio import SeqIO
-sequence1 = SeqIO.read("sequence.fasta", "fasta")
+sequence1 = SeqIO.read("/home/nikolay/PycharmProjects/mRNA/ATXN1/sequence.fasta", "fasta")
 ATXN1 = str(sequence1.seq)
 
 
@@ -108,5 +108,3 @@ a = editor_rna()
 df_sense = a.sense()
 print(df_sense)
 df_antisense = a.antisense()
-
-
